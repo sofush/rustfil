@@ -1,13 +1,13 @@
 use std::{
-    fs::OpenOptions,
-    io::{Read, Write},
+    fs::{File, OpenOptions},
+    io::{Read, Seek, Write},
     path::Path,
     str::FromStr,
 };
 
 const MENU: &'static str = "
 Choose one of the following options:
-1) Create the file
+1) Open or create the file
 2) Delete the file
 3) Append a line to the file
 4) Truncate the file
@@ -16,7 +16,7 @@ Choose one of the following options:
 ";
 
 enum Choice {
-    Create,
+    Open,
     Delete,
     Append,
     Truncate,
@@ -28,9 +28,8 @@ impl FromStr for Choice {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let choice = match s.trim().to_lowercase().as_str()
-        {
-            "1" | "c" | "create" => Choice::Create,
+        let choice = match s.trim().to_lowercase().as_str() {
+            "1" | "o" | "open" | "c" | "create" => Choice::Open,
             "2" | "d" | "delete" => Choice::Delete,
             "3" | "a" | "append" => Choice::Append,
             "4" | "t" | "truncate" => Choice::Truncate,
@@ -43,9 +42,7 @@ impl FromStr for Choice {
     }
 }
 
-fn prompt_user(
-    prompt: &str,
-) -> Result<String, std::io::Error> {
+fn prompt_user(prompt: &str) -> Result<String, std::io::Error> {
     println!("{prompt}");
     print!("> ");
 
@@ -56,103 +53,88 @@ fn prompt_user(
     Ok(name)
 }
 
-fn create_file<P: AsRef<Path>>(path: P) {
-    if let Ok(true) = std::fs::exists(&path) {
-        println!("File already exists.");
-        return;
-    }
-
+fn open_file<P: AsRef<Path>>(path: P) -> Option<File> {
     let file = OpenOptions::new()
-        .create_new(true)
+        .create(true)
         .append(true)
+        .read(true)
         .open(&path);
 
-    match file {
-        Ok(_) => println!("File has been created."),
-        Err(e) => println!("Could not create file: {e}"),
+    if let Err(e) = file {
+        println!("Could not open/create file: {}.", e.kind());
+        return None;
     }
-}
 
-fn delete_file<P: AsRef<Path>>(path: P) {
-    let res = std::fs::remove_file(&path);
-
-    match res {
-        Ok(_) => println!("File has been deleted."),
-        Err(_) => println!("Could not delete file."),
-    }
-}
-
-fn append_to_file<P: AsRef<Path>>(path: P, prompt: &str) {
-    let Ok(mut file) =
-        OpenOptions::new().append(true).open(&path)
-    else {
-        println!("Could not open file.");
-        return;
-    };
-
-    let Ok(line) = prompt_user(prompt) else {
-        println!("Prompt failed.");
-        return;
-    };
-
-    if let Err(_) = write!(&mut file, "{line}") {
-        println!("Could not append to file.");
-    }
-}
-
-fn truncate_file<P: AsRef<Path>>(path: P) {
-    if OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(&path)
-        .is_err()
-    {
-        println!("Could not truncate the file.");
-        return;
-    };
-
-    println!("File has been truncated.");
-}
-
-fn print_file<P: AsRef<Path>>(path: P) {
-    let Ok(mut file) =
-        OpenOptions::new().read(true).open(&path)
-    else {
-        println!("Could not open file.");
-        return;
-    };
-
-    let mut s = String::new();
-
-    match file.read_to_string(&mut s) {
-        Ok(_) => println!("{s}"),
-        Err(_) => println!("Could not read from file."),
-    }
+    println!("File has been opened.");
+    file.ok()
 }
 
 fn main() -> Result<(), std::io::Error> {
+    let mut file: Option<File> = None;
+    let path = "./file.txt";
+
     loop {
         let input = prompt_user(MENU)?;
+
         let Ok(choice) = Choice::from_str(&input) else {
             println!("Unrecognized option, try again.");
             continue;
         };
 
-        let path = "./file.txt";
-
         match choice {
-            Choice::Create => {
-                create_file(path);
+            Choice::Open => {
+                file = open_file(path);
             }
-            Choice::Delete => delete_file(path),
+            Choice::Delete => {
+                file = None;
+                let res = std::fs::remove_file(&path);
+
+                match res {
+                    Ok(_) => println!("File has been deleted."),
+                    Err(e) => println!("Could not delete file: {}.", e.kind()),
+                }
+            }
             Choice::Append => {
-                append_to_file(path, "Write a line that will be appended to the file:");
+                let Some(file) = file.as_mut() else {
+                    println!("File has not been created yet.");
+                    continue;
+                };
+
+                let input = prompt_user(
+                    "Write a line that will be appended to the file:",
+                )?;
+
+                if let Err(e) = write!(file, "{input}") {
+                    println!("Could not append to file: {}.", e.kind());
+                }
             }
             Choice::Truncate => {
-                truncate_file(path);
+                let Some(file) = file.as_mut() else {
+                    println!("File has not been created yet.");
+                    continue;
+                };
+
+                if let Err(e) = file.set_len(0) {
+                    println!("Could not truncate file: {}.", e.kind());
+                }
             }
             Choice::Print => {
-                print_file(path);
+                let Some(file) = file.as_mut() else {
+                    println!("File has not been created yet.");
+                    continue;
+                };
+
+                let mut s = String::new();
+
+                file.flush()?;
+                file.seek(std::io::SeekFrom::Start(0))?;
+
+                match file.read_to_string(&mut s) {
+                    Ok(_) => println!("{s}"),
+                    Err(e) => {
+                        println!("Could not read from file: {}.", e.kind())
+                    }
+                }
             }
             Choice::Quit => break,
         }
